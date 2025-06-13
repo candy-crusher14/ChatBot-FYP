@@ -4,6 +4,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import json
 import os
+import openai
+import PyPDF2
+import io
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -68,7 +71,8 @@ with app.app_context():
 @app.route('/')
 def home():
     if 'user_id' in session:
-        return render_template('index.html')
+        user = User.query.get(session['user_id'])
+        return render_template('index.html', current_user=user)
     return redirect(url_for('login'))
 
 
@@ -135,7 +139,11 @@ def get_chats():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    user_chats = Chat.query.filter_by(user_id=session['user_id']).order_by(Chat.updated_at.desc()).all()
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    user_chats = Chat.query.filter_by(user_id=user.id).order_by(Chat.updated_at.desc()).all()
     chats_data = [{
         'id': chat.id,
         'title': chat.title,
@@ -143,7 +151,10 @@ def get_chats():
         'timestamp': chat.updated_at.isoformat()
     } for chat in user_chats]
 
-    return jsonify(chats_data)
+    return jsonify({
+        'chats': chats_data,
+        'user': {'name': user.name}
+    })
 
 
 @app.route('/api/chats', methods=['POST'])
@@ -151,9 +162,13 @@ def create_chat():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
     new_chat = Chat(
         id=f"chat_{datetime.now().timestamp()}",
-        user_id=session['user_id'],
+        user_id=user.id,
         title='New Chat',
         preview='Start a new conversation...'
     )
@@ -173,7 +188,11 @@ def get_messages(chat_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    chat = Chat.query.filter_by(id=chat_id, user_id=session['user_id']).first()
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    chat = Chat.query.filter_by(id=chat_id, user_id=user.id).first()
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
@@ -191,6 +210,10 @@ def add_message(chat_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
     data = request.json
     content = data.get('content')
     sender = data.get('sender')
@@ -198,7 +221,7 @@ def add_message(chat_id):
     if not content or sender not in ['user', 'bot']:
         return jsonify({'error': 'Invalid data'}), 400
 
-    chat = Chat.query.filter_by(id=chat_id, user_id=session['user_id']).first()
+    chat = Chat.query.filter_by(id=chat_id, user_id=user.id).first()
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
@@ -229,6 +252,8 @@ def user_settings():
         return jsonify({'error': 'Unauthorized'}), 401
 
     user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
 
     if request.method == 'GET':
         return jsonify(json.loads(user.settings))
@@ -238,23 +263,107 @@ def user_settings():
     if not new_settings:
         return jsonify({'error': 'Invalid data'}), 400
 
+    # Merge new settings with existing ones
+    current_settings = json.loads(user.settings)
+    updated_settings = {
+        **current_settings,
+        **new_settings
+    }
+
     # Validate settings
     valid_settings = {
-        'theme': new_settings.get('theme', 'midnight'),
-        'fontSize': new_settings.get('fontSize', '16'),
-        'fontFamily': new_settings.get('fontFamily', 'Inter'),
-        'lineHeight': new_settings.get('lineHeight', '1.5'),
-        'model': new_settings.get('model', 'gpt-4-turbo'),
-        'temperature': float(new_settings.get('temperature', 0.7)),
-        'maxTokens': int(new_settings.get('maxTokens', 2048)),
-        'topP': float(new_settings.get('topP', 0.9)),
-        'apiKey': new_settings.get('apiKey', '')
+        'theme': updated_settings.get('theme', 'midnight'),
+        'fontSize': updated_settings.get('fontSize', '16'),
+        'fontFamily': updated_settings.get('fontFamily', 'Inter'),
+        'lineHeight': updated_settings.get('lineHeight', '1.5'),
+        'model': updated_settings.get('model', 'gpt-4-turbo'),
+        'temperature': float(updated_settings.get('temperature', 0.7)),
+        'maxTokens': int(updated_settings.get('maxTokens', 2048)),
+        'topP': float(updated_settings.get('topP', 0.9)),
+        'apiKey': updated_settings.get('apiKey', '')
     }
 
     user.settings = json.dumps(valid_settings)
     db.session.commit()
 
     return jsonify(valid_settings)
+
+
+# AI Integration
+@app.route('/api/ai/generate', methods=['POST'])
+def generate_response():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.json
+    messages = data.get('messages', [])
+    model = data.get('model', 'gpt-4-turbo')
+    temperature = data.get('temperature', 0.7)
+    max_tokens = data.get('maxTokens', 2048)
+    top_p = data.get('topP', 0.9)
+
+    user_settings = json.loads(user.settings)
+    api_key = user_settings.get('apiKey', '')
+
+    if not api_key:
+        return jsonify({'error': 'API key not configured'}), 400
+
+    try:
+        openai.api_key = api_key
+        response = openai.ChatCompletion.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p
+        )
+
+        return jsonify({
+            'content': response.choices[0].message['content'],
+            'model': model
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# File Processing
+@app.route('/api/process-file', methods=['POST'])
+def process_file():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    # Process PDF files
+    if file.filename.endswith('.pdf'):
+        try:
+            pdf_reader = PyPDF2.PdfReader(file)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+            return jsonify({'content': text})
+        except Exception as e:
+            return jsonify({'error': f'PDF processing error: {str(e)}'}), 500
+
+    # Process text files
+    elif file.filename.endswith('.txt'):
+        try:
+            text = file.read().decode('utf-8')
+            return jsonify({'content': text})
+        except Exception as e:
+            return jsonify({'error': f'Text processing error: {str(e)}'}), 500
+
+    else:
+        return jsonify({'error': 'Unsupported file type'}), 400
 
 
 if __name__ == '__main__':

@@ -6,6 +6,36 @@
     <title>Modern Chatbot UI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <style>
+        /* Auth dropdown styles */
+        .auth-dropdown {
+            background: var(--bg-light);
+            border-radius: 12px;
+            padding: 10px 0;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border-color);
+            min-width: 180px;
+            z-index: 1000;
+        }
+
+        .auth-dropdown-item {
+            padding: 12px 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.95rem;
+        }
+
+        .auth-dropdown-item:hover {
+            background: var(--button-hover-bg);
+        }
+
+        #logoutButton {
+            color: var(--error);
+            border-top: 1px solid var(--border-color);
+            margin-top: 5px;
+            padding-top: 15px;
+        }
+    </style>
 </head>
 <body>
     <div class="app-container">
@@ -148,6 +178,7 @@
                         <option value="gpt-4-turbo" selected>GPT-4 Turbo</option>
                         <option value="gpt-3.5">GPT-3.5</option>
                         <option value="claude-2">Claude 2</option>
+                        <option value="gemini">Gemini</option>
                     </select>
 
                     <div class="form-group" style="margin-top: 15px;">
@@ -194,9 +225,9 @@
                             <h4>Midnight Galaxy</h4>
                             <p>Deep space theme with purple accents</p>
                         </div>
-                        <div class="setting-option" id="themeDarkPurple">
-                            <h4>Dark Purple</h4>
-                            <p>Elegant dark theme with purple accents</p>
+                        <div class="setting-option" id="themeDark">
+                            <h4>Dark Theme</h4>
+                            <p>Modern dark theme with purple accents</p>
                         </div>
                         <div class="setting-option" id="themeLight">
                             <h4>Light Breeze</h4>
